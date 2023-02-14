@@ -4,4 +4,4 @@ A simple implementation of operational transformation function coupled with web 
 For simplicity everthing packed within a html file.
 
 Some basic instructions on how it works within the GUI when started.
-Will work started from users local hdd, only OpenLayers pulled fro the web.
+Will work started from users local hdd, only OpenLayers pulled from the web.
