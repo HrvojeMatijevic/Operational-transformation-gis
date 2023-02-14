@@ -1,0 +1,943 @@
+﻿<!doctype html>
+<html lang="en">
+  <head>
+
+
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/openlayers/openlayers.github.io@main/dist/en/v7.0.0/legacy/ol.css">
+    
+    
+
+<style>
+       button.code {
+         font-family: Monaco,Menlo,Consolas,"Courier New",monospace;
+         font-size: 14px;
+         padding: 5px;
+         margin: 0 5px;
+       }    
+</style>
+
+<style>
+      .map {
+        width: 100%;
+        height:550px;
+      }
+</style>
+
+
+    <script src="https://cdn.jsdelivr.net/gh/openlayers/openlayers.github.io@main/dist/en/v7.0.0/legacy/ol.js"></script>    
+    
+    
+</head>
+
+
+<body>
+
+
+	<div id="map" class="map"></div>	
+
+	<align="left"><button id="sendchange" class="code">Broadcast</button>
+	<align="left"><button id="controlconvergence" class="code">Control convergence</button>
+	<p align="left"><b> Status: <span id="klijentispis"> --- </span> </b> 
+	<p align="left" style="white-space:nowrap">Coords:<span id="ispisKoordinata" ></span>
+
+	
+
+<br>
+HOW IT WORKS<br>
+Preps: Open the app in two or more tabs of the same browser. Drag and drop a geojson linestring or a polygon with no holes in all apps/tabs and follow the steps 1-5. 			<br>
+Note1: Starting with identical geometry in all tabs is a must!	Note2: exit editing mode (by click in empty part of map) before broadcasting.				<br>	
+Editing: Start by clicking on geometry, finish by a click in empty space. The change can be composed out of one or multiple modify/insert/delete edits in a continuous sequence.<br>
+Editing: Hold Alt key on keyboard and click on a vertex to delete it.										<br>									
+STEP 1)Tab1: Do some editing to create a change. 																<br>
+STEP 2)Tab2: Do some editing here also. Identical, overlaping or disjoint changes as what was done in tab1 are supported.							<br>
+STEP 3)Tab1: Push Broadcast button -> edits from tab1 in unchanged form get broadcasted and applied to current state of all other tabs.							<br>
+STEP 4)Tab2: Push Broadcast button -> edits from tab2, transformed if needed, get broadcasted and applied to current state all other tabs.						<br>
+STEP 5)Final result: Geometries identical in all tabs.	
+
+
+	
+
+    <script type="text/javascript">
+
+
+
+
+
+//******************************************************************************
+//			Configs, global variables and layers
+//******************************************************************************
+
+
+var workingFeature;
+
+
+var lastLocalDelta= {};
+var localDeltas= [];
+var lastReceivedDelta= {};
+var localDeltaCommitted=true;
+var committedState;
+var currentState;
+var initialArrayCoordsBefore;
+
+
+
+
+    var vectorSourcePreuzeti = new ol.source.Vector();
+    var vectorSourceDiD = new ol.source.Vector();
+
+
+const stiloviPoligona = [
+
+ new ol.style.Style({
+    image: new ol.style.Circle({
+      radius: 4,
+      fill: new ol.style.Fill({
+        color: 'blue',
+      }),
+    }),
+    geometry: function (feature) {
+      // return the coordinates of linestring or of the first ring of the polygon
+	if (feature.getGeometry().getType()=="Polygon") {
+		var coordinates = feature.getGeometry().getCoordinates()[0];
+	} else if (feature.getGeometry().getType()=="LineString") {
+		var coordinates = feature.getGeometry().getCoordinates();
+	}
+      return new ol.geom.MultiPoint(coordinates);
+    },
+  }),
+  
+  new ol.style.Style({
+    stroke: new ol.style.Stroke({
+      color: 'blue',
+      width: 2,
+    }),
+    fill: new ol.style.Fill({
+      color: 'rgba(0, 0, 255, 0.1)',
+    }),
+   //text: function (feature) {return new ol.style.Text({text: feature.getId()})}
+  }),
+
+
+  new ol.style.Style({
+    image: new ol.style.Circle({
+      radius: 4,
+      fill: new ol.style.Fill({
+        color: 'orange',
+      }),
+    }),
+    geometry: function (feature) {
+      // return the coordinates of the first ring of the polygon
+      var coordinates = feature.getGeometry().getCoordinates()[0][0];
+      return new ol.geom.Point(coordinates);
+    },
+  }),
+];
+
+
+
+const stiloviPoligonaDD = [
+
+ new ol.style.Style({
+    image: new ol.style.Circle({
+      radius: 4,
+      fill: new ol.style.Fill({
+        color: 'red',
+      }),
+    }),
+    geometry: function (feature) {
+      // return the coordinates of the first ring of the polygon
+      if (feature.getGeometry().getType()=="Polygon") {
+		var coordinates = feature.getGeometry().getCoordinates()[0];
+	} else if (feature.getGeometry().getType()=="LineString") {
+		var coordinates = feature.getGeometry().getCoordinates();
+	}
+      return new ol.geom.MultiPoint(coordinates);
+    },
+  }),
+  
+  new ol.style.Style({
+    stroke: new ol.style.Stroke({
+      color: 'red',
+      width: 2,
+    }),
+    //fill: new ol.style.Fill({
+    //  color: 'rgba(0, 0, 255, 0.1)',
+    //}),
+   //text: function (feature) {return new ol.style.Text({text: feature.getId()})}
+  }),
+
+
+  new ol.style.Style({
+    image: new ol.style.Circle({
+      radius: 4,
+      fill: new ol.style.Fill({
+        color: 'black',
+      }),
+    }),
+    geometry: function (feature) {
+      // return the coordinates of the first ring of the polygon
+      var coordinates = feature.getGeometry().getCoordinates()[0][0];
+      return new ol.geom.Point(coordinates);
+    },
+  }),
+];
+
+
+      
+var vectorSlojPreuzeti = new ol.layer.Vector({
+        source: vectorSourcePreuzeti,
+           minResolution: 0.01,
+           maxResolution: 100000,
+        visible: true,
+        title: 'Važeće stanje',
+        style: stiloviPoligona
+      });
+
+
+     
+
+
+//******************************************************************
+//                           Drag & drop geoJSON geometry to map
+//******************************************************************
+
+      
+
+	var dragAndDropInteraction = new ol.interaction.DragAndDrop({
+       	 formatConstructors: [
+       	   ol.format.GPX,
+       	   ol.format.GeoJSON,
+       	   ol.format.IGC,
+       	   ol.format.KML,
+       	   ol.format.TopoJSON
+       	 ]
+	}); 
+
+
+
+
+	dragAndDropInteraction.on('addfeatures', function(event) {
+          	vectorSourceDiD.addFeatures(event.features);
+
+	var vectorSlojDiD= new ol.layer.Vector({
+        	source: vectorSourceDiD,
+          	 minResolution: 0.001,
+          	 maxResolution: 5000,
+        	visible: true,
+       	 title: 'D&D',
+       	 style: stiloviPoligonaDD
+     	 });
+
+        	map.addLayer(vectorSlojDiD);
+        	map.getView().fit(vectorSourceDiD.getExtent());
+		vectorSlojPreuzeti.setZIndex (2);
+
+
+
+			var geomType=event.features[0].getGeometry().getType();
+			if (geomType=="Polygon") {
+				var coords=event.features[0].getGeometry().getCoordinates()[0];
+			} else if (geomType=="LineString") {
+				var coords=event.features[0].getGeometry().getCoordinates();
+			}
+				
+
+			if (geomType=="Polygon") {
+				var olGeometrija= new ol.geom.Polygon([coords]);
+				workingFeature = new ol.Feature({geometry: olGeometrija});
+				committedState=workingFeature.getGeometry().getCoordinates()[0];	
+			} else if (geomType=="LineString") {
+				var olGeometrija= new ol.geom.LineString(coords);
+				workingFeature = new ol.Feature({geometry: olGeometrija});
+				committedState=workingFeature.getGeometry().getCoordinates();	
+			}
+
+			currentState=committedState.deepClone();
+			vectorSourcePreuzeti.addFeature (workingFeature); 
+			document.getElementById("klijentispis").textContent="Geometry copied, ready for work";
+
+ 	});
+
+
+
+
+//**********************************************************
+//Instancing map, view, etc...
+//************************************************************
+
+
+       var view= new ol.View({
+        });
+
+
+     var map = new ol.Map({
+	//interactions: ol.interaction.defaults().extend([dragAndDropInteraction]), 
+        target: 'map',
+        view: view
+      });
+
+	map.addInteraction(dragAndDropInteraction);
+	map.addLayer(vectorSlojPreuzeti);	
+        
+	
+
+     var mousePositionControl = new ol.control.MousePosition({
+        coordinateFormat: ol.coordinate.createStringXY(1),
+        className: 'custom-mouse-position',
+        target: document.getElementById("ispisKoordinata"),
+        undefinedHTML: ''
+      });
+	
+	
+	map.addControl(mousePositionControl);
+
+
+
+//********************************************************
+//             Buttons
+//********************************************************
+
+
+document.getElementById('sendchange').onclick = function() {
+		if (lastLocalDelta.start!==undefined) {
+			postModifyProcessor ();
+		} else {
+			alert ("Nothing to be broadcasted, do and complete an edit.");
+		}
+};
+
+
+document.getElementById('controlconvergence').onclick = function() {
+		initiateConvergenceControl ()
+};
+
+
+
+
+
+//******************************************************************** CONVERGENCE CONTROL ******************************************************
+
+function initiateConvergenceControl () {
+			var geomType=workingFeature.getGeometry().getType();
+			if (geomType=="Polygon") {
+				 var coordsToSend=workingFeature.getGeometry().getCoordinates()[0];	
+			} else if (geomType=="LineString") {
+				var coordsToSend=workingFeature.getGeometry().getCoordinates();	
+			}
+
+			if (localDeltas.length>0){
+				alert ("Can not control convergence with local deltas still unprocessed");
+			} else {
+				var message = {type:"cc", coords:coordsToSend}; 
+				bc.postMessage(message);
+			}	
+}
+
+
+
+function controlMyConvergence (event) {
+			var geomType=workingFeature.getGeometry().getType();
+			if (geomType=="Polygon") {
+				 var myCoords=workingFeature.getGeometry().getCoordinates()[0];	
+			} else if (geomType=="LineString") {
+				var myCoords=workingFeature.getGeometry().getCoordinates();	
+			}
+		
+			var remoteCoords=event.data.coords;
+
+			if (JSON.stringify(myCoords) === JSON.stringify(remoteCoords)) {
+					alert ("I converged :-)");
+				} else {alert ("I did not converge :-(");
+			}
+
+		
+}
+
+
+//********************************************************************* BROADCASTCHANNEL EVENTS (INTERLEAVED WITH OT) ********************************
+
+//Initialization of the channel
+const bc = new BroadcastChannel('messaging_channel');
+
+// received message distributor
+bc.onmessage = (event) => { 
+			if (event.data.type=="cc") { 
+				controlMyConvergence (event);
+			} else { 
+				processIncommingMessage(event); 
+			}
+}
+
+
+
+/*
+NEW workflow:
+A client can have uncommitted deltas which reside in its local queue. This occurs when edits are done but not broadcasted.
+In that case, when broadcasting initiates, deltas get committed "as are" from queue and broadcasted, since its considered that the clients
+local deltas are in order (sequentially from queue).
+*/
+
+function postModifyProcessor () {
+
+	if (!localDeltaCommitted ){
+		console.log ("TURN START -----------------------------------------");
+		console.log ("Committing  last local delta: "+JSON.stringify (lastLocalDelta));
+		// Committing local delta, those are considered in order
+
+		for (var i = 0; i < localDeltas.length; i++) {
+			committedState = localDeltas[i].apply(committedState); 		
+		}
+
+
+		currentState=committedState.deepClone();
+		localDeltaCommitted=true;
+	}
+
+		
+	//Broadcasting local deltas from queue
+	for (var i = 0; i < localDeltas.length; i++) {
+		var message = {type:"delta", delta:localDeltas[i]}; 
+		bc.postMessage(message);
+		console.log ("Sent delta: "+ JSON.stringify (message));
+	}
+
+	localDeltas=[];
+	lastReceivedDelta= {};	
+	document.getElementById("klijentispis").textContent="Local delta committed and broadcasted";
+}
+
+
+
+/*
+NEW workflow:
+Received message handler. 
+When client receives remote delta (considered to always be in order), having uncomitted local deltas then those local deltas get transformed against remote delta
+and applied to current state. Before that, the remote delta got committed and current state updated to committed.
+Local deltas remain uncommitted until broadcasting initiates (when they get committed).
+Finnaly, GUI gets refreshed from current state.
+*/
+
+
+
+function processIncommingMessage(event){
+
+	var kreiranaDelta = new CoordsReplace (event.data.delta.start, event.data.delta.del, event.data.delta.coords);
+	lastReceivedDelta=kreiranaDelta;
+	remoteDeltaReceived=true;
+	console.log ("Received new remote delta: "+JSON.stringify (lastReceivedDelta));
+
+	if (!localDeltaCommitted){
+		//This is the main part of the procedure
+		committedState = lastReceivedDelta.apply(committedState);  // Client applies the received remote delta as is
+		currentState=committedState.deepClone();
+		var inserted = lastReceivedDelta;
+		for (var i = 0; i < localDeltas.length; i++) {
+			var deltaBefore=JSON.stringify (localDeltas[i]);
+			var tt = localDeltas[i].transpose(inserted); // Client transforms his local delta from queue
+			inserted = tt[1]; // The transposed remote delta to be used for transposing the next local delta
+			localDeltas[i]=tt[0]; 
+			console.log ("Last local delta transposed from  " + deltaBefore + " to " +JSON.stringify (tt[0]));
+			currentState = tt[0].apply(currentState);
+ 		}
+
+	} else if (localDeltaCommitted){
+		
+		console.log ("Committing and applying last received delta")
+		committedState = lastReceivedDelta.apply(committedState);
+		currentState=committedState.deepClone();
+		console.log ("TURN END -------------------------------");
+	}
+
+	//Preparation for the redrawing of geometry on GUI
+	if (workingFeature.getGeometry().getType()=="Polygon") {
+		var newGeom = new ol.geom.Polygon([currentState]);
+	} else if (workingFeature.getGeometry().getType()=="LineString") {
+		var newGeom = new ol.geom.LineString(currentState);
+	}
+
+	//Actual Redrawing on GUI happens here
+	workingFeature.setGeometry(newGeom);
+	
+};
+
+
+//*****************************************************************************************************************************
+//*****************************************  OT  ******************************************************************************
+//*****************************************************************************************************************************
+
+//**************************************************** OT TogetherJS UTILS ****************************************************
+
+
+
+//Original togetherjs's assert
+  function assert (cond) {
+    if (! cond) {
+      var args = ["Assertion error:"].concat(Array.prototype.slice.call(arguments, 1));
+      console.error.apply(console, args);
+      if (console.trace) {
+        console.trace();
+      }
+      throw new AssertionError(args.join(" "));
+    }
+  };
+
+
+ function AssertionError (message) {
+    if (! this instanceof AssertionError) {
+      return new AssertionError(message);
+    }
+    this.message = message;
+    this.name = "AssertionError";
+  };
+
+  AssertionError.prototype = Error.prototype;
+
+
+
+//**************************************************** OT custom UTILS ****************************************************
+
+
+//*******deep clone array  *****  taken from: https://stackoverflow.com/questions/3978492/fastest-way-to-duplicate-an-array-in-javascript-slice-vs-for-loop
+
+Array.prototype.deepClone = function(){
+  return this.map(e => Array.isArray(e) ? e.clone() : e);
+};
+
+
+
+
+// *****  Shallow clone array  *****
+
+Array.prototype.clone = function(){
+  return [...this];
+};
+
+
+
+//*******  deep compare array *******  taken from: https://stackoverflow.com/questions/7837456/how-to-compare-arrays-in-javascript
+
+
+// Warn if overriding existing method
+if(Array.prototype.equals)
+    console.warn("Overriding existing Array.prototype.equals. Possible causes: New API defines the method, there's a framework conflict or you've got double inclusions in your code.");
+// attach the .equals method to Array's prototype to call it on any array
+Array.prototype.equals = function (array) {
+    // if the other array is a falsy value, return
+    if (!array)
+        return false;
+
+    // compare lengths - can save a lot of time 
+    if (this.length != array.length)
+        return false;
+
+    for (var i = 0, l=this.length; i < l; i++) {
+        // Check if we have nested arrays
+        if (this[i] instanceof Array && array[i] instanceof Array) {
+            // recurse into the nested arrays
+            if (!this[i].equals(array[i]))
+                return false;       
+        }           
+        else if (this[i] != array[i]) { 
+            // Warning - two different object instances will never be equal: {x:20} != {x:20}
+            return false;   
+        }           
+    }       
+    return true;
+}
+
+
+
+//********************************  CoordsReplace,  created by modifying TOGETHERJS TextReplace  **********************************
+
+
+  class CoordsReplace {
+
+    constructor (start, del, coords) {
+      //assert(typeof start == "number" && typeof del == "number" && typeof coords == "array", start, del, coords);
+      assert(start >=0 && del >= 0, start, del);
+      this.start = start;
+      this.del = del;
+      this.coords = coords;
+    }
+
+    toString () {
+      if (this.empty()) {
+        return '[no-op]';
+      }
+      if (! this.del) {
+        return '[insert ' + JSON.stringify(this.coords) + ' @' + this.start + ']';
+      } else if (! this.coords) {
+        return '[delete ' + this.del + ' chars @' + this.start + ']';
+      } else {
+        return '[replace ' + this.del + ' chars with ' + JSON.stringify(this.coords) + ' @' + this.start + ']';
+      }
+    }
+
+    equals (other) {
+      return other.constructor === this.constructor &&
+          other.del === this.del &&
+          other.start === this.start &&
+          //other.text === this.text;	      // From original
+	  this.coords.equals (other.coords);  // New - coords array instead of text
+    }
+
+    clone (start, del, coords) {
+      if (start === undefined) {
+        start = this.start;
+      }
+      if (del === undefined) {
+        del = this.del;
+      }
+      if (coords === undefined) {
+	//coords = this.coords;  			// From original
+        coords = this.coords.clone();  			// New - added clonning of array (possibly not nedded at all)
+      }
+      return new CoordsReplace(start, del, coords);
+    }
+
+    empty () {
+      return (! this.del) && (! this.coords);
+    }
+
+    apply (geometryCoords) {
+      if (this.empty()) {
+        return geometryCoords;
+      }
+      if (this.start > geometryCoords.length) {
+        console.trace();
+        throw new AssertionError("Start after end of text (" + JSON.stringify(text) + "/" + text.length + "): " + this);
+      }
+      if (this.start + this.del > geometryCoords.length) {
+        throw new AssertionError("Start+del after end of text (" + JSON.stringify(text) + "/" + text.length + "): " + this);
+      }
+      //return text.substr(0, this.start) + this.text + text.substr(this.start+this.del);	// From original
+	if (this.coords.length>0) {geometryCoords.splice (this.start,this.del,...this.coords);}	// New - operation is insert or replace
+	else {geometryCoords.splice (this.start,this.del);}					// New - operation is simple delete
+
+	if (this.start==0 && workingFeature.getGeometry().getType()=="Polygon") {geometryCoords[geometryCoords.length-1] = geometryCoords[0];}	// New - if zeroth coord modified then current zeroth must be copied to last 
+
+	return geometryCoords;
+    }
+
+    transpose (delta) {
+      /* Transform this delta as though the other delta had come before it.
+         Returns a [new_version_of_this, transformed_delta], where transformed_delta
+         satisfies:
+         result1 = new_version_of_this.apply(delta.apply(text));
+         result2 = transformed_delta.apply(this.apply(text));
+         assert(result1 == result2);
+         Does not modify this object.
+      */
+      var overlap;
+      assert(delta instanceof CoordsReplace, "Transposing with non-TextReplace:", delta);
+      if (this.empty()) {
+        console.log("  =this is empty");
+        return [this.clone(), delta.clone()];
+      }
+      if (delta.empty()) {
+        console.log("  =other is empty");
+        return [this.clone(), delta.clone()];
+      }
+      if (delta.before(this)) {
+        console.log("  =this after other");
+        return [this.clone(this.start + delta.coords.length - delta.del),
+                delta.clone()];
+      } else if (this.before(delta)) {
+        console.log("  =this before other");
+        return [this.clone(), delta.clone(delta.start + this.coords.length - this.del)];
+      } else if (delta.sameRange(this)) {
+        console.log("  =same range");
+        return [this.clone(this.start+delta.coords.length, 0),
+                delta.clone(undefined, 0)];				
+      } else if (delta.contains(this)) {
+        console.log("  =other contains this");
+        return [this.clone(delta.start+delta.coords.length, 0, this.coords),
+                delta.clone(undefined, delta.del - this.del + this.coords.length, delta.coords.concat (this.coords))];
+      } else if (this.contains(delta)) {
+        console.log("  =this contains other");
+        return [this.clone(undefined, this.del - delta.del + delta.coords.length, delta.coords.concat (this.coords)),
+                delta.clone(this.start, 0, delta.coords)];
+      } else if (this.overlapsStart(delta)) {
+        console.log("  =this overlaps start of other");
+        overlap = this.start + this.del - delta.start;
+        return [this.clone(undefined, this.del - overlap),
+                delta.clone(this.start + this.coords.length, delta.del - overlap)];
+      } else {
+        console.log("  =this overlaps end of other");
+        assert(delta.overlapsStart(this), delta+"", "does not overlap start of", this+"", delta.before(this));
+        overlap = delta.start + delta.del - this.start;
+        return [this.clone(delta.start + delta.coords.length, this.del - overlap),
+                delta.clone(undefined, delta.del - overlap)];
+      }
+      throw 'Should not happen';
+    }
+
+    before (other) {
+      return this.start + this.del <= other.start;
+    }
+
+    contains (other) {
+      return other.start >= this.start && other.start + other.del < this.start + this.del;
+    }
+
+    sameRange (other) {
+      return other.start == this.start && other.del == this.del;
+    }
+
+    overlapsStart (other) {
+      return this.start < other.start && this.start + this.del > other.start;
+    }
+
+}
+
+//*****************************************************************************************************************************
+//*****************************************  END OF OT  ***********************************************************************
+//*****************************************************************************************************************************
+
+
+
+
+
+
+
+//***************************************************************  GUI UTILS  *****************************************************************
+
+
+//*******  Are two coords identical?  **************
+  
+function vertexesIdentical (t1,t2) {
+	var odgovor=false;
+	if (t1[0]==t2[0] && t1[1]==t2[1]) {odgovor=true}
+	return odgovor;
+}
+
+
+
+//***************************************************************************************************************************************
+//  								Interactions and geometry redrawing
+//***************************************************************************************************************************************
+
+
+//*********************************************************
+//  EDITING
+//*********************************************************
+
+
+var selektiranje2 = new ol.interaction.Select();
+var editiranje = new ol.interaction.Modify({features: selektiranje2.getFeatures(),});
+map.addInteraction(selektiranje2);
+map.addInteraction(editiranje);
+selektiranje2.setActive(true);
+editiranje.setActive(true);
+
+
+//********************************************************
+// SELECT/DESELECT event handler (for changes generating)
+//********************************************************
+
+selektiranje2.on('select',function(evt){	
+	
+	//Select geometry for editing (remember initial coordinates when selected to start editing)
+	if (selektiranje2.getFeatures().getArray().length!=0) {
+		//alert ("SELECT event");
+
+			if (selektiranje2.getFeatures().getArray()[0].getGeometry().getType()=="Polygon") {
+				initialArrayCoordsBefore=selektiranje2.getFeatures().getArray()[0].getGeometry().getCoordinates()[0].deepClone();
+			} else if (selektiranje2.getFeatures().getArray()[0].getGeometry().getType()=="LineString") {
+				initialArrayCoordsBefore=selektiranje2.getFeatures().getArray()[0].getGeometry().getCoordinates().deepClone();
+			}
+	} else {
+
+	console.log ("Generated the delta:" + JSON.stringify (lastLocalDelta));
+	localDeltas.push(lastLocalDelta);
+	}
+
+})
+
+
+
+
+//*****************************************************
+// MODIFYSTART event handler
+//*****************************************************
+editiranje.on('modifystart',function(evt){
+
+			if (selektiranje2.getFeatures().getArray()[0].getGeometry().getType()=="Polygon") {
+				poljeKoordinataPrije=selektiranje2.getFeatures().getArray()[0].getGeometry().getCoordinates()[0].deepClone();
+			} else if (selektiranje2.getFeatures().getArray()[0].getGeometry().getType()=="LineString") {
+				poljeKoordinataPrije=selektiranje2.getFeatures().getArray()[0].getGeometry().getCoordinates().deepClone();
+			}
+
+})
+
+//***************************************************
+// MODIFYEND event handler
+//***************************************************
+editiranje.on('modifyend',function(evt){
+	
+
+    var ulazniPoligoni = {};
+    selektiraniPoligoni=selektiranje2.getFeatures().getArray();
+    for (var i = 0; i < selektiraniPoligoni.length; i++) {
+        var objectId=selektiraniPoligoni[i].getId();
+	var jedanUlazniPoligon = {};
+	jedanUlazniPoligon.geometrija=selektiraniPoligoni[i].getGeometry();
+        ulazniPoligoni[objectId]=jedanUlazniPoligon;
+    }
+
+
+
+			if (jedanUlazniPoligon.geometrija.getType()=="Polygon") {
+				var koordinate=jedanUlazniPoligon.geometrija.getCoordinates()[0];
+			} else if (jedanUlazniPoligon.geometrija.getType()=="LineString") {
+				var koordinate=jedanUlazniPoligon.geometrija.getCoordinates();
+			}
+
+
+		lastLocalDelta= {};
+		
+		var newDelta=operationFromCoordinatesArrays(initialArrayCoordsBefore,koordinate);
+		if (newDelta){
+			lastLocalDelta=newDelta;
+			localDeltaCommitted=false;
+			document.getElementById("klijentispis").textContent="I have some local deltas waiting to be broadcasted";
+		} else {
+			alert ("Unallowed change, reverting.");
+			//Revert to state before the last edit done by the user
+			if (workingFeature.getGeometry().getType()=="Polygon") {
+				var newGeom = new ol.geom.Polygon([poljeKoordinataPrije]);
+			} else if (workingFeature.getGeometry().getType()=="LineString") {
+				var newGeom = new ol.geom.LineString(poljeKoordinataPrije);
+			}
+
+			workingFeature.setGeometry(newGeom);
+		}
+	
+
+
+})
+
+
+//***************************************************
+// The actual operations generator
+//***************************************************
+
+function operationFromCoordinatesArrays(arrBefore, arrAfter){
+
+		var mapBefore = new Map();
+		for (var j = 0; j < arrBefore.length-1; j++) {
+			mapBefore.set(arrBefore[j][0].toString()+"_"+arrBefore[j][1].toString(),j);
+		}
+
+
+		var mapAfter = new Map();
+		for (var j = 0; j < arrAfter.length-1; j++) {
+			mapAfter.set(arrAfter[j][0].toString()+"_"+arrAfter[j][1].toString(),j);
+		}
+
+
+		//We delete identical elements from both maps. Thus in beforemap will only remain deleted items and in
+		//after map will only remain new items. 
+		for (const key of mapBefore.keys()) {
+		  if (mapAfter.has(key))  {mapBefore.delete(key); mapAfter.delete(key);}
+		}
+
+		//Check if mapbefore has all indexes consecutive (thus we have a single, continuous sequence of deletes)
+		//Otherwise, mark this change as unallowed.
+		//Do the sam thing for mapafter.
+		
+		var unallowed=false;
+
+		var firstIndex=false;
+		for (const idx of mapBefore.values()) {
+			if (!firstIndex){previousIdx=idx; firstIndex=true;}
+		  	else  { 
+				var step=idx-previousIdx;
+				previousIdx=idx;
+				if (step!=1)  {unallowed=true}	
+			}
+		}
+
+
+		var firstIndex=false;
+		for (const idx of mapAfter.values()) {
+			if (!firstIndex){previousIdx=idx; firstIndex=true;}
+		  	else  { 
+				var step=idx-previousIdx;
+				previousIdx=idx;
+				if (step!=1)  {unallowed=true}	
+			}
+		}
+
+
+		if (unallowed){
+			return null;
+		}
+
+
+		// Now we can generate the actual operation
+		var startParam;
+		var delParam;
+		var newVertex=[];
+
+
+		//Populating new vertexes array
+		var newVertices=mapAfter.size;
+		if (newVertices>0)  {
+			var firstIndexIns=mapAfter.values().next().value;
+			var numElementsIns=mapAfter.size;
+			var newVertex=arrAfter.slice(firstIndexIns,firstIndexIns+numElementsIns);
+		}
+
+		//determining start and del parameters
+		var delParam=mapBefore.size;
+		if (delParam>0)  {
+			//Sequence start is the value of first item from "deleted" map 
+			startParam=mapBefore.values().next().value;
+		} else {
+			//If there are no deleted elements then sequence start is the value of first item from "inserted" map 
+			startParam=mapAfter.values().next().value;
+		}
+
+
+		return  new CoordsReplace (startParam, delParam, newVertex);
+
+}
+
+
+
+
+
+
+    </script>
+  </body>
+</html>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+							
+							  
+
+
+
+
+
+
+
+
+
