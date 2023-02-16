@@ -1,5 +1,5 @@
 # Operational-transformation-gis
-A simple implementation of operational transformation function coupled with web gis editor. It reuses Mozilla's [TogetherJS's](https://togetherjs.com/docs/) OT function [TextReplace] (https://github.com/jsfiddle/togetherjs/blob/develop/togetherjs/ot.js), modified to handle a set of coordinates instead of a set of characters. The modified function is named CoordsReplace.
+A simple implementation of operational transformation function coupled with web gis editor. It reuses Mozilla's [TogetherJS's](https://togetherjs.com/docs/) OT function [TextReplace](https://github.com/jsfiddle/togetherjs/blob/develop/togetherjs/ot.js), modified to handle a set of coordinates instead of a set of characters. The modified function is named CoordsReplace.
 
 The editor uses [OpenLayers](https://openlayers.org/) for the visualization of the map and for required map controls such as zoom in/out, pan, modifying geometry, loading vector geometry.
 
